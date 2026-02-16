@@ -192,6 +192,7 @@ void classify( void )
         counts[j] = 0;
     }
 
+    #pragma omp parallel for reduction(+:counts[:n_clusters])
     for (int i=0; i<n_points; i++) {
         /* Index and squared distance of the nearest centroid. */
         int nearest = 0;
@@ -216,15 +217,19 @@ void classify( void )
    all centroids. */
 float update_centroids( void )
 {
+    #pragma omp for
     for (int j=0; j<n_clusters; j++) {
         vzero( &new_centroids[IDX(j, 0)] );
     }
 
+    #pragma omp parallel for reduction(+:new_centroids[:n_clusters*n_dims])
     for (int i=0; i<n_points; i++) {
         vadd( &new_centroids[IDX(cluster_of[i], 0)], &data[IDX(i, 0)] );
     }
 
     float maxsqshift = 0.0f;
+    // #pragma omp parallel for reduction(max:maxsqshift)
+    #pragma omp parallel for reduction(max:maxsqshift) schedule(dynamic, 32)
     for (int j=0; j<n_clusters; j++) {
         /* If a cluster is empty, we simply copy the old centroid to
            the new one. */
@@ -239,6 +244,44 @@ float update_centroids( void )
         vcopy( &centroids[IDX(j, 0)], &new_centroids[IDX(j, 0)] );
     }
 
+    return maxsqshift;
+}
+
+float update_centroids2( void )
+{
+    #pragma omp parallel
+    {
+        float *private_centroids = (float*)calloc(n_clusters * n_dims, sizeof(float));
+        
+        #pragma omp for nowait
+        for (int i=0; i<n_points; i++) {
+            vadd(&private_centroids[IDX(cluster_of[i], 0)], &data[IDX(i, 0)]);
+        }
+        
+        #pragma omp critical
+        for (int j=0; j<n_clusters; j++) {
+            vadd(&new_centroids[IDX(j, 0)], &private_centroids[IDX(j, 0)]);
+        }
+        
+        free(private_centroids);
+    }
+    
+    float maxsqshift = 0.0f;
+    #pragma omp parallel for reduction(max:maxsqshift)
+    for (int j=0; j<n_clusters; j++) {
+        /* If a cluster is empty, we simply copy the old centroid to
+           the new one. */
+        if (counts[j] == 0) {
+            vcopy( &new_centroids[IDX(j,0)], &centroids[IDX(j,0)] );
+        } else {
+            vmul( &new_centroids[IDX(j, 0)], 1.0f/counts[j] );
+        }
+        const float sqshift = sqdist( &centroids[IDX(j, 0)], &new_centroids[IDX(j, 0)] );
+        if (sqshift > maxsqshift)
+            maxsqshift = sqshift;
+        vcopy( &centroids[IDX(j, 0)], &new_centroids[IDX(j, 0)] );
+    }
+    
     return maxsqshift;
 }
 
